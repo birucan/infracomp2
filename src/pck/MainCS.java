@@ -12,19 +12,30 @@ import java.net.Socket;
 import java.security.KeyPairGenerator;
 import java.security.NoSuchAlgorithmException;
 import java.security.Provider;
+import java.security.PublicKey;
 import java.security.Security;
+import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Date;
 import java.util.Random;
 
+import javax.crypto.BadPaddingException;
+import javax.crypto.Cipher;
+import javax.crypto.IllegalBlockSizeException;
+import javax.crypto.Mac;
+import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
 import javax.security.auth.x500.X500Principal;
 import javax.xml.bind.DatatypeConverter;
 
+import org.bouncycastle.cert.X509CertificateHolder;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.x509.X509V1CertificateGenerator;
 
+import java.security.InvalidKeyException;
 import java.security.KeyPair;
 
  
@@ -36,7 +47,6 @@ public class MainCS {
     public final static String HOST ="localhost";
     public final static int PORT = 4004;
 	public static final String AES = "AES";
-	public static final String Blowfish = "Blowfish";
 	public static final String RSA = "RSA";
 	public static final String HMACMD5 = "HMACMD5";
 
@@ -59,6 +69,8 @@ public class MainCS {
      * Certificado
      */
 	private KeyPair keyPair;
+	private PublicKey publicKey;
+	private SecretKey secretKey;
    
     public static void main(String[] args) {
         MainCS mainSS = new MainCS();
@@ -67,7 +79,7 @@ public class MainCS {
     }
  
     private void conectar() {
-    	byte[] b = new byte[64];
+    	byte[] b = new byte[32];
     	new Random().nextBytes(b);
     	
         System.out.println("Intentando conexion con servidor ss...");
@@ -93,38 +105,62 @@ public class MainCS {
             System.out.println("Servidor:"+input );
             
             //Se genera el certificado para mandar al servidor, se guarda en el output y se envia
+
+           keyPair = KeyPairGenerator.getInstance(RSA, new BouncyCastleProvider()).generateKeyPair();
             
-            keyPair = KeyPairGenerator.getInstance(RSA, new BouncyCastleProvider()).generateKeyPair();
-            
-            output = generateCertificate(keyPair);
-            System.out.println("Cliente:"+ output);
-            send(output);
-            input=read();
-            System.out.println("Servidor:"+input );
-            
-            //se envia y recibe el arreglo de bytes
-           output = DatatypeConverter.printHexBinary(b);
-           System.out.println("Cliente:"+ output);
-           send(output);
-           input=read();
-           System.out.println("Servidor:"+input );
-           
-           //Se envia OK
-           output = OK;
-           
-           send(output);
-           System.out.println("Cliente:"+ output);
+           output = generateCertificate(keyPair);
           
-           
-           //Envio de datos
+          
+          	System.out.println("Cliente:"+ output);
+          	send(output);
+          	input=read();
+          	System.out.println("Servidor:"+input );
+            
+            //sale la llave publica del certidicado generado por el servidor
+          
+            publicKey = getCertificate(input).getPublicKey();
+            
+            
+            //creacion llave de session encriptacion y envio
+            
+            secretKey = new SecretKeySpec(b, "AES");
+            
+            String certEncoded= DatatypeConverter.printHexBinary(cifrarAsim(secretKey.getEncoded()));
+            System.out.println("cliente enviando certificado cifrado...");
+            output= certEncoded;
+            send(output);
+            System.out.println("Cliente:"+output);
+            input=read();
+            
+            System.out.println("Server:"+input);
+            
+            
+            String PkeyServer = input;
+            byte[] PkeyCif= DatatypeConverter.parseHexBinary(PkeyServer);
+            
+            secretKey=new SecretKeySpec(descifrarAsim(PkeyCif),"AES");
+            
+            
+            //Envio de OK requerido por protocolo
+            send(OK);
+            System.out.println("Cliente:"+OK);
+            
+           //Envio de datos y encriptacion con hash
            BufferedReader stdIn = new BufferedReader(new InputStreamReader(System.in));
            System.out.println("Envie datos(EJ:15;41 24.2028,2 10.4418):"); 
            output = stdIn.readLine();
+           byte[] datosEnc= cifrarSime(output.getBytes());
+           byte[] datosHash= hasher(output.getBytes(),secretKey, "HMACMD5");
            
-           send(output);
+           String sDatosEnc =DatatypeConverter.printHexBinary(datosEnc);
+           String sDatosHash =DatatypeConverter.printHexBinary(datosHash);
            
-           System.out.println("Cliente:"+ output);
-           send(output);
+           send(sDatosEnc);
+           send(sDatosHash);
+           
+           System.out.println("Cliente(Datos encriptados):"+ sDatosEnc);
+           System.out.println("Cliente(Datos hash):"+ sDatosHash);
+           
            input=read();
            System.out.println("Servidor:"+input );
            
@@ -142,40 +178,87 @@ public class MainCS {
      
        
     }
-   
-    private void send(String msg){
+    
+   /*
+    * Metodos extra
+    */
+    
+    
+    /*
+     * Metodo para ciframiento asimetrico
+     */
+    private byte[] cifrarAsim(byte[] encoded) throws IllegalBlockSizeException, BadPaddingException, InvalidKeyException, NoSuchAlgorithmException, NoSuchPaddingException {
+		Cipher ci = Cipher.getInstance(RSA);
+		ci.init(Cipher.ENCRYPT_MODE, publicKey);
+		return ci.doFinal(encoded);
+	}
+    /*
+     * Metodo para desciframiento asimetrico
+     */
+	private byte[] descifrarAsim(byte[] codific) throws Exception {
+		Cipher ci = Cipher.getInstance("RSA");
+		ci.init(Cipher.DECRYPT_MODE, keyPair.getPrivate());
+		return ci.doFinal(codific);	
+	}
+	/*
+	 * Metodo de cifriamiento simetrico
+	 */
+	private byte[] cifrarSime(byte[] clearText) throws Exception {
+
+		Cipher ci = Cipher.getInstance("AES/ECB/PKCS5Padding");
+		ci.init(Cipher.ENCRYPT_MODE, secretKey);
+		return ci.doFinal(clearText);
+	}
+	/*
+	 * Envia string a travez del socket
+	 */
+	private void send(String msg){
        pw.println(msg);
     }
+    /*
+     * retorna los mensajes que entran por el socket
+     */
     private String read() throws IOException{
         String response= br.readLine();
         return response;
        
     }
-    
+    /*
+     * genera hash
+     */
+	private byte[] hasher(byte[] b, SecretKey k, String m) throws Exception {
+		Mac foo = Mac.getInstance(m);
+		foo.init(k);
+		byte[] bytes = foo.doFinal(b);
+		return bytes;
+	}
+    /*
+     * Genera un certificado con el key dado y lo pasa a string
+     */
     private String generateCertificate(KeyPair keyPair) throws Exception {
     	X509V1CertificateGenerator  gen = new X509V1CertificateGenerator();
 
     	Security.addProvider(new BouncyCastleProvider());
-        gen.setNotBefore(new Date(System.currentTimeMillis()-1));
+        gen.setNotBefore(new Date(System.currentTimeMillis()-40000000));
         gen.setNotAfter(new Date(System.currentTimeMillis() + 40000000));
         gen.setSerialNumber(BigInteger.valueOf(System.currentTimeMillis()));
         gen.setIssuerDN(new X500Principal("CN=idk"));
         gen.setSubjectDN(new X500Principal("CN=idk"));
         gen.setPublicKey(keyPair.getPublic());
         gen.setSignatureAlgorithm("MD5withRSA");
-        
-       
-		
-    		
-    	
-    	
-    		
     	X509Certificate returner = gen.generateX509Certificate(keyPair.getPrivate());
     	byte [] byteArray=returner.getEncoded();	
     	String foo= DatatypeConverter.printHexBinary(byteArray);
     	
         return foo;
     }
- 
+    /*
+     * Genera un certificado apartir de un string
+     */
+    private X509Certificate getCertificate(String certificate) throws CertificateException, IOException {
+		
+    	byte[] c= DatatypeConverter.parseHexBinary(certificate);
+    	return new JcaX509CertificateConverter().getCertificate(new X509CertificateHolder(c));
+    }
  
 }

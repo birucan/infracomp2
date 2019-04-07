@@ -56,7 +56,7 @@ public class MainSS {
     private String output;
     
     /*
-     * Certificado
+     * llave
      */
 	private KeyPair keyPair;
    
@@ -167,11 +167,6 @@ public class MainSS {
         gen.setPublicKey(keyPair.getPublic());
         gen.setSignatureAlgorithm("MD5withRSA");
         
-       
-		
-    		
-    	
-    	
     		
     	X509Certificate returner = gen.generateX509Certificate(keyPair.getPrivate());
     	byte [] byteArray=returner.getEncoded();	
